@@ -1,0 +1,17 @@
+export enum FOLDER_NAMES {
+     IMAGE = 'image',
+     IMAGES = 'images',
+     LICENSE = 'license',
+     DRIVER_LICENSE = 'driverLicense',
+     INSURANCE = 'insurance',
+     PERMITS = 'permits',
+     BANNER = 'banner',
+     ADVERTISEMENT_BANNER = 'advertisement_banner',
+     LOGO = 'logo',
+     AUDIO = 'audio',
+     VIDEO = 'video',
+     DOCUMENT = 'document',
+     THUMBNAIL = 'thumbnail',
+     OTHERS = 'others',
+     COVER_PHOTO = 'coverPhoto',
+}

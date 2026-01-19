@@ -1,0 +1,38 @@
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Private keys & certificates
+*.pem
+*.key
+*.crt
+
+# Firebase Admin SDK keys
+*firebase-adminsdk*.json
+
+# Executable files
+*.exe
+
+# Uploads / user generated files
+uploads/
+uploads/**
+
+# Logs
+logs/
+*.log
+
+# Node modules (if Node.js backend)
+node_modules/
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Build / cache
+dist/
+build/
+.cache/
+

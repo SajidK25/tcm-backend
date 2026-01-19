@@ -1,0 +1,274 @@
+import { StatusCodes } from 'http-status-codes';
+import AppError from '../../../errors/AppError';
+import { Category } from '../category/category.model';
+import { SubCategory } from '../subCategorys/subCategory.model';
+import Variant from './variant.model';
+import { generateSlug } from './variant.utils';
+import { IVariant } from './variant.interfaces';
+import QueryBuilder from '../../builder/QueryBuilder';
+import mongoose from 'mongoose';
+import { Product } from '../product/product.model';
+import { IJwtPayload } from '../auth/auth.interface';
+import unlinkFile from '../../../shared/unlinkFile';
+import { Order } from '../order/order.model';
+import { ORDER_STATUS } from '../order/order.enums';
+
+const createVariant = async (payload: IVariant, user: IJwtPayload) => {
+     const session = await mongoose.startSession(); // Start a session
+
+     try {
+          // Start a transaction
+          session.startTransaction();
+
+          // Validate Category
+          const isExistCategory = await Category.findById(payload.categoryId).session(session); // Use session for transaction
+          if (!isExistCategory) {
+               payload?.image?.forEach((element) => {
+                    unlinkFile(element);
+               });
+               throw new AppError(StatusCodes.NOT_FOUND, 'Category not found!');
+          }
+
+          // Validate SubCategory
+          const isExistSubCategory = await SubCategory.findOne({ _id: payload.subCategoryId, categoryId: payload.categoryId }).session(session); // Use session for transaction
+          if (!isExistSubCategory) {
+               payload?.image?.forEach((element) => {
+                    unlinkFile(element);
+               });
+               throw new AppError(StatusCodes.NOT_FOUND, 'SubCategory not found!');
+          }
+
+          // Create a new Variant
+          const createVariant = new Variant({
+               ...payload,
+               createdBy: user.id,
+          });
+
+          // Generate slug
+          const variantSlug = generateSlug(isExistCategory.name, isExistSubCategory.name, payload);
+
+          // // Check if variant with same slug already exists
+          // const isVariantExistSlug = await Variant.findOne({ slug: variantSlug }).session(session); // Use session for transaction
+          // if (isVariantExistSlug) {
+          //      payload?.image?.forEach((element) => {
+          //           unlinkFile(element);
+          //      });
+          //      return isVariantExistSlug.toObject(); // Convert Mongoose document to plain object to avoid circular reference
+          // }
+
+          // Set the generated slug
+          createVariant.slug = variantSlug;
+
+          // Save the variant to the database
+          await createVariant.save({ session });
+
+          if (!createVariant) {
+               payload?.image?.forEach((element) => {
+                    unlinkFile(element);
+               });
+               throw new AppError(StatusCodes.BAD_REQUEST, 'Failed to create Variant');
+          }
+
+          // Add the new variant to the subcategory
+          await SubCategory.findByIdAndUpdate(
+               payload.subCategoryId,
+               {
+                    $push: { variants: createVariant._id },
+               },
+               { new: true, session }, // Use session for transaction
+          );
+
+          // Commit the transaction
+          await session.commitTransaction();
+
+          // End the session
+          session.endSession();
+
+          // Return a clean response
+          return createVariant;
+     } catch (error) {
+          // Abort the transaction on error
+          await session.abortTransaction();
+          session.endSession();
+
+          // Rethrow the error
+          throw error;
+     }
+};
+
+export const getAllVariantsFromDB = async (query: Record<string, unknown>) => {
+     if (query.productRef && query.productRef == 'null') {
+          query.productRef = null;
+     }
+     const variantQuery = new QueryBuilder(
+          Variant.find().populate([
+               { path: 'categoryId', select: 'name' }, // Only populate the "name" field of categoryId
+               { path: 'subCategoryId', select: 'name' }, // Only populate the "name" field of subCategoryId
+          ]),
+          query,
+     );
+     const result = await variantQuery.fields().sort().paginate().filter().search(['slug', 'color', 'identifier']).modelQuery;
+     const meta = await variantQuery.countTotal();
+     return {
+          meta,
+          result,
+     };
+};
+
+export const getSingleVariantByIdFromDB = async (id: string) => {
+     const result = await Variant.findById(id).populate([
+          { path: 'categoryId', select: 'name' }, // Only populate the "name" field of categoryId
+          { path: 'subCategoryId', select: 'name' }, // Only populate the "name" field of subCategoryId
+     ]);
+     // If no variant was found, throw an error
+     if (!result) {
+          throw new AppError(StatusCodes.NOT_FOUND, 'Variant not found');
+     }
+     return {
+          result,
+     };
+};
+
+export const getSingleVariantBySlugFromDB = async (slug: string) => {
+     const result = await Variant.findOne({ slug }).populate([
+          { path: 'categoryId', select: 'name' }, // Only populate the "name" field of categoryId
+          { path: 'subCategoryId', select: 'name' }, // Only populate the "name" field of subCategoryId
+     ]);
+
+     // If no variant was found, throw an error
+     if (!result) {
+          throw new AppError(StatusCodes.NOT_FOUND, 'Variant not found');
+     }
+     return {
+          result,
+     };
+};
+
+// Update Variant
+export const updateVariant = async (id: string, data: Partial<IVariant>, user: IJwtPayload) => {
+     console.log('🚀 ~ updateVariant ~ data:', data);
+     // Find and update the variant
+     const toBeUpdatedVariant = await Variant.findOne({ _id: id, categoryId: data.categoryId, subCategoryId: data.subCategoryId })
+          .populate({ path: 'categoryId', select: 'name' }) // Populate categoryId's name field
+          .populate({ path: 'subCategoryId', select: 'name' }); // Populate subCategoryId's name field
+     // If no variant was found, throw an error
+     if (!toBeUpdatedVariant) {
+          data?.image?.forEach((element) => {
+               unlinkFile(element);
+          });
+          throw new AppError(StatusCodes.NOT_FOUND, 'Variant not found');
+     }
+
+     if (data.image && toBeUpdatedVariant.image) {
+          toBeUpdatedVariant.image?.forEach((element) => {
+               unlinkFile(element);
+          });
+     }
+     // Update the variant with the new slug and the provided data
+     toBeUpdatedVariant.set({
+          ...data,
+          image: data.image || toBeUpdatedVariant.image, // Apply the incoming data
+     });
+     const variantSlug = generateSlug((toBeUpdatedVariant.categoryId as any).name, (toBeUpdatedVariant.subCategoryId as any).name, toBeUpdatedVariant);
+
+     toBeUpdatedVariant.set({
+          slug: variantSlug,
+     });
+     // Save the updated variant
+     await toBeUpdatedVariant.save();
+     console.log('🚀 ~ updateVariant ~ toBeUpdatedVariant:', toBeUpdatedVariant);
+     return toBeUpdatedVariant;
+};
+
+// Delete Variant
+export const deleteVariant = async (id: string, user: IJwtPayload) => {
+     // Find and delete the variant
+     const deletedVariant = await Variant.findById(id);
+     // If no variant was found, throw an error
+     if (!deletedVariant) {
+          throw new AppError(StatusCodes.NOT_FOUND, 'Variant not found');
+     }
+     if (deletedVariant.createdBy.toString() !== user.id) {
+          throw new AppError(StatusCodes.NOT_FOUND, 'You are not authorised to delte');
+     }
+
+     // // Check if the variant is related to any product by variantId
+     // const product = await Product.findOne({ 'product_variant_Details.variantId': id });
+     // if (product) {
+     //      throw new AppError(StatusCodes.BAD_REQUEST, 'You cannot delete the variant because it is associated with a product.');
+     // }
+
+     // check if any running order available
+     // check if any running order available
+     const isOrderExistForThisVariant = await Order.findOne({
+          'products.variant': new mongoose.Types.ObjectId(id), // Check for the variant
+          'status': { $in: [ORDER_STATUS.CANCELLED, ORDER_STATUS.PROCESSING] }, // Match order status
+     });
+
+     console.log('🚀 ~ deleteVariant ~ isOrderExistForThisVariant:', isOrderExistForThisVariant);
+
+     if (isOrderExistForThisVariant) {
+          throw new AppError(StatusCodes.BAD_REQUEST, 'You cannot delete the variant because it is associated with a running order.');
+     }
+
+     deletedVariant.set({
+          isDeleted: true,
+     });
+     await deletedVariant.save();
+
+     return deletedVariant;
+};
+
+export const getVariantsBySubCategoryIdFromDB = async (id: string, query: Record<string, unknown>) => {
+     const variantQuery = new QueryBuilder(
+          Variant.find({ subCategoryId: id }).populate([
+               { path: 'categoryId', select: 'name' }, // Only populate the "name" field of categoryId
+               { path: 'subCategoryId', select: 'name' }, // Only populate the "name" field of subCategoryId
+          ]),
+          query,
+     );
+     const result = await variantQuery.fields().sort().paginate().filter().search(['slug']).modelQuery;
+     // handle case where no variants are found throw error
+     if (result.length === 0) {
+          throw new AppError(StatusCodes.NOT_FOUND, 'No variants found for this subcategory');
+     }
+     const meta = await variantQuery.countTotal();
+     return {
+          meta,
+          result,
+     };
+};
+
+export const getVariantFieldsBySubCategoryIdFromDB = async (id: string, query: Record<string, unknown>) => {
+     const variantQuery = new QueryBuilder(Variant.find({ subCategoryId: id }), query);
+
+     const result = await variantQuery.fields().sort().paginate().filter().search(['slug']).modelQuery;
+
+     // handle case where no variants are found throw error
+     if (result.length === 0) {
+          throw new AppError(StatusCodes.NOT_FOUND, 'No variants found for this subcategory');
+     }
+
+     // Extract unique field names from the result
+     const variantFields = [...new Set(result.flatMap((variant) => Object.keys(variant)))];
+
+     // Return the response with the unique field names
+     const meta = await variantQuery.countTotal();
+
+     return {
+          meta,
+          variant_fields: variantFields,
+          // result,
+     };
+};
+
+export const VariantService = {
+     createVariant,
+     getAllVariantsFromDB,
+     getSingleVariantByIdFromDB,
+     getSingleVariantBySlugFromDB,
+     updateVariant,
+     deleteVariant,
+     getVariantsBySubCategoryIdFromDB,
+     getVariantFieldsBySubCategoryIdFromDB,
+};
